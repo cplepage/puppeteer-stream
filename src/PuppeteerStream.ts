@@ -82,7 +82,7 @@ export async function launch(
 		opts.args.push(`--ozone-override-screen-size=${opts.defaultViewport.width},${opts.defaultViewport.height}`);
 	}
 
-	opts.headless = opts.headless === "new" ? "new" : false;
+	opts.headless = ((opts.headless as any) === "new" ? "new" : false) as boolean | "shell";
 
 	if (opts.headless) {
 		if (!opts.ignoreDefaultArgs) opts.ignoreDefaultArgs = [];
@@ -221,7 +221,11 @@ function unlock() {
 	else mutex = false;
 }
 
-export async function getStream(page: Page, opts: getStreamOptions) {
+export async function getStream(
+	page: Page, 
+	opts: getStreamOptions,
+	onMessageWebRTC: (message: string) => void
+) {
 	if (!opts.audio && !opts.video) throw new Error("At least audio or video must be true");
 	if (!opts.mimeType) {
 		if (opts.video) opts.mimeType = "video/webm";
@@ -251,19 +255,14 @@ export async function getStream(page: Page, opts: getStreamOptions) {
 	unlock();
 	if (!tab) throw new Error("Cannot find tab");
 
-	const stream = new Transform({
-		highWaterMark: 1024 * 1024 * highWaterMarkMB,
-		transform(chunk, encoding, callback) {
-			callback(null, chunk);
-		},
-	});
-
+	let streamingWS: WebSocket;
 	function onConnection(ws: WebSocket, req: IncomingMessage) {
+		streamingWS = ws;
+
 		const url = new URL(`http://localhost:${port}${req.url}`);
 		if (url.searchParams.get("index") != index.toString()) return;
 
 		async function close() {
-			if (!stream.readableEnded && !stream.writableEnded) stream.end();
 			if (!extension.isClosed() && extension.browser().isConnected()) {
 				// @ts-ignore
 				extension.evaluate((index) => STOP_RECORDING(index), index);
@@ -278,13 +277,12 @@ export async function getStream(page: Page, opts: getStreamOptions) {
 			(await wss).off("connection", onConnection);
 		}
 
-		ws.on("message", (data) => {
-			stream.write(data);
-		});
+		ws.onmessage = (message) => {
+			onMessageWebRTC(message.data as string);
+		}
 
 		ws.on("close", close);
 		page.on("close", close);
-		stream.on("close", close);
 	}
 
 	(await wss).on("connection", onConnection);
@@ -298,7 +296,9 @@ export async function getStream(page: Page, opts: getStreamOptions) {
 		{ ...opts, index, tabId: tab.id }
 	);
 
-	return stream;
+	return (messageWebRTC: string) => {
+		streamingWS?.send(messageWebRTC);
+	}
 }
 
 async function assertExtensionLoaded(ext: Page, opt: getStreamOptions["retry"]) {

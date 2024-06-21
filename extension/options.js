@@ -33,6 +33,71 @@ async function START_RECORDING({
 
 	const client = new WebSocket(`ws://localhost:${window.location.hash.substring(1)}/?index=${index}`, []);
 
+
+	////////// WebRTC /////////////
+
+	client.onmessage = message => {
+		const messageWebRTC = JSON.parse(message.data);
+		switch (messageWebRTC.type) {
+			case "answer":
+				handleAnswer(messageWebRTC);
+				break;
+			case "candidate":
+				handleCandidate(messageWebRTC);
+				break;
+		}
+	}
+
+	let pc, stream;
+	function createPeerConnection() {
+		pc = new RTCPeerConnection();
+		pc.onicecandidate = e => {
+			const message = {
+				type: 'candidate',
+				candidate: null,
+			};
+			if (e.candidate) {
+				message.candidate = e.candidate.candidate;
+				message.sdpMid = e.candidate.sdpMid;
+				message.sdpMLineIndex = e.candidate.sdpMLineIndex;
+			}
+			client.send(JSON.stringify(message));
+		};
+		stream.getTracks().forEach(track => pc.addTrack(track, stream));
+	}
+
+	async function makeCall() {
+		createPeerConnection();
+
+		const offer = await pc.createOffer();
+		const message = { type: 'offer', sdp: offer.sdp }
+		client.send(JSON.stringify(message));
+		await pc.setLocalDescription(offer);
+	}
+
+	async function handleAnswer(answer) {
+		if (!pc) {
+			console.error('no peerconnection');
+			return;
+		}
+		await pc.setRemoteDescription(answer);
+	}
+
+	async function handleCandidate(candidate) {
+		if (!pc) {
+			console.error('no peerconnection');
+			return;
+		}
+		if (!candidate.candidate) {
+			await pc.addIceCandidate(null);
+		} else {
+			await pc.addIceCandidate(candidate);
+		}
+	}
+
+
+	///////// End WebRTC /////////
+
 	await new Promise((resolve) => {
 		if (client.readyState === WebSocket.OPEN) resolve();
 		client.addEventListener("open", resolve);
@@ -45,7 +110,7 @@ async function START_RECORDING({
 		});
 	});
 
-	const stream = await navigator.mediaDevices.getUserMedia({
+	stream = await navigator.mediaDevices.getUserMedia({
 		video: video && {
 			...video,
 			mandatory: {
@@ -64,53 +129,5 @@ async function START_RECORDING({
 		},
 	});
 
-	// somtimes needed to sync audio and video
-	if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-
-	const recorder = new MediaRecorder(stream, {
-		ignoreMutedMedia: true,
-		audioBitsPerSecond,
-		videoBitsPerSecond,
-		bitsPerSecond,
-		mimeType,
-	});
-
-	recorder.ondataavailable = async (e) => {
-		if (!e.data.size) return;
-
-		const buffer = await e.data.arrayBuffer();
-
-		client.send(buffer);
-	};
-	recorders[index] = recorder;
-	// TODO: recorder onerror
-
-	recorder.onerror = () => recorder.stop();
-
-	recorder.onstop = function () {
-		try {
-			const tracks = stream.getTracks();
-
-			tracks.forEach(function (track) {
-				track.stop();
-			});
-
-			if (client.readyState === WebSocket.OPEN) client.close();
-		} catch (error) {}
-	};
-	stream.oninactive = () => {
-		try {
-			recorder.stop();
-		} catch (error) {}
-	};
-
-	recorder.start(frameSize);
-}
-
-function STOP_RECORDING(index) {
-	console.log("[PUPPETEER_STREAM] STOP_RECORDING", index);
-	if (!recorders[index]) return;
-	if (recorders[index].state === "inactive") return;
-
-	recorders[index].stop();
+	makeCall();
 }
