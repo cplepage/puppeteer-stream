@@ -1,5 +1,11 @@
 const recorders = {};
 
+let client, pc, stream;
+
+function CONNECT_WEBSOCKET() {
+	client = new WebSocket(`ws://localhost:${window.location.hash.substring(1)}`, []);
+}
+
 async function START_RECORDING({
 	index,
 	video,
@@ -14,6 +20,8 @@ async function START_RECORDING({
 	audioConstraints,
 	tabId,
 }) {
+	STOP_RECORDING();
+
 	console.log(
 		"[PUPPETEER_STREAM] START_RECORDING",
 		JSON.stringify({
@@ -31,9 +39,6 @@ async function START_RECORDING({
 		})
 	);
 
-	const client = new WebSocket(`ws://localhost:${window.location.hash.substring(1)}/?index=${index}`, []);
-
-
 	////////// WebRTC /////////////
 
 	client.onmessage = message => {
@@ -48,7 +53,6 @@ async function START_RECORDING({
 		}
 	}
 
-	let pc, stream;
 	function createPeerConnection() {
 		pc = new RTCPeerConnection();
 		pc.onicecandidate = e => {
@@ -64,6 +68,11 @@ async function START_RECORDING({
 			client.send(JSON.stringify(message));
 		};
 		stream.getTracks().forEach(track => pc.addTrack(track, stream));
+		pc.oniceconnectionstatechange = function() {
+			if(pc.iceConnectionState == 'disconnected') {
+				STOP_RECORDING();
+			}
+		}
 	}
 
 	async function makeCall() {
@@ -130,4 +139,11 @@ async function START_RECORDING({
 	});
 
 	makeCall();
+}
+
+function STOP_RECORDING() {
+	pc?.close()
+	stream?.getTracks().forEach(track => track.stop());
+	pc = null;
+	stream = null;
 }

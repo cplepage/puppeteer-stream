@@ -7,7 +7,6 @@ import {
 	BrowserConnectOptions,
 } from "puppeteer-core";
 import * as path from "path";
-import { Transform } from "stream";
 import WebSocket, { WebSocketServer } from "ws";
 import { IncomingMessage } from "http";
 
@@ -23,27 +22,30 @@ type StreamLaunchOptions = LaunchOptions &
 	};
 let port: number;
 
+
 export const wss = (async () => {
 	for (let i = 55200; i <= 65535; i++) {
-		const ws = new WebSocketServer({ port: i });
+		const webSocketServer = new WebSocketServer({ port: i });
 		const promise = await Promise.race([
 			new Promise((resolve) => {
-				ws.on("error", (e: any) => {
+				webSocketServer.on("error", (e: any) => {
 					resolve(!e.message.includes("EADDRINUSE"));
 				});
 			}),
 			new Promise((resolve) => {
-				ws.on("listening", () => {
+				webSocketServer.on("listening", () => {
 					resolve(true);
 				});
 			}),
 		]);
 		if (promise) {
 			port = i;
-			return ws;
+			return webSocketServer;
 		}
 	}
 })();
+
+let streamingWS: WebSocket.WebSocket = null;
 
 export async function launch(
 	arg1: StreamLaunchOptions | { launch?: Function; [key: string]: any },
@@ -121,8 +123,25 @@ export async function launch(
 
 	(await browser.newPage()).goto(`chrome-extension://${extensionId}/options.html#${port}`);
 
+	
+	const onConnection = (ws: WebSocket.WebSocket) => {
+		console.log("Connected")
+		streamingWS = ws;
+	}
+	(await wss).on("connection", onConnection);
+
+	const extension = await getExtensionPage(browser);
+	await assertExtensionLoaded(extension, { each: 20, times: 3 });
+	//@ts-ignore
+	extension.evaluate(() => CONNECT_WEBSOCKET());
+	while(!streamingWS) {
+		await new Promise(res => setTimeout(res, 200))
+	}
+
 	const old_browser_close = browser.close;
 	browser.close = async () => {
+		(await wss).off("connection", onConnection);
+
 		for (const page of await browser.pages()) {
 			if (!page.url().startsWith(`chrome-extension://${extensionId}/options.html`)) {
 				await page.close();
@@ -255,37 +274,9 @@ export async function getStream(
 	unlock();
 	if (!tab) throw new Error("Cannot find tab");
 
-	let streamingWS: WebSocket;
-	function onConnection(ws: WebSocket, req: IncomingMessage) {
-		streamingWS = ws;
-
-		const url = new URL(`http://localhost:${port}${req.url}`);
-		if (url.searchParams.get("index") != index.toString()) return;
-
-		async function close() {
-			if (!extension.isClosed() && extension.browser().isConnected()) {
-				// @ts-ignore
-				extension.evaluate((index) => STOP_RECORDING(index), index);
-			}
-
-			if (ws.readyState != WebSocket.CLOSED) {
-				setTimeout(() => {
-					// await pending messages to be sent and then close the socket
-					if (ws.readyState != WebSocket.CLOSED) ws.close();
-				}, opts.streamConfig?.closeTimeout ?? 5000);
-			}
-			(await wss).off("connection", onConnection);
-		}
-
-		ws.onmessage = (message) => {
-			onMessageWebRTC(message.data as string);
-		}
-
-		ws.on("close", close);
-		page.on("close", close);
+	streamingWS.onmessage = (message) => {
+		onMessageWebRTC(message.data as string);
 	}
-
-	(await wss).on("connection", onConnection);
 
 	await page.bringToFront();
 	await assertExtensionLoaded(extension, retryPolicy);
