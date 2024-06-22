@@ -8,7 +8,6 @@ import {
 } from "puppeteer-core";
 import * as path from "path";
 import WebSocket, { WebSocketServer } from "ws";
-import { IncomingMessage } from "http";
 
 const extensionPath = path.join(__dirname, "..", "extension");
 const extensionId = "jjndjgheafjngoipoacpjgeicjeomjli";
@@ -125,7 +124,6 @@ export async function launch(
 
 	
 	const onConnection = (ws: WebSocket.WebSocket) => {
-		console.log("Connected")
 		streamingWS = ws;
 	}
 	(await wss).on("connection", onConnection);
